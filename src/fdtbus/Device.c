@@ -78,7 +78,9 @@ DeviceTreeBusCreateDevice(
     WdfDeviceSetBusInformationForChildren(device, &busInfo);
 
     // Perform static enumeration of bus device
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Start to enumearte devices");
     status = EnumerateDevices(device, deviceContext);
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Finished enumerating devices");
 
     return status;
 }
@@ -115,6 +117,7 @@ EnumerateDevices(
         }
 
         // Enumerate static device
+        TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Enumerate device for %s @ %d (Depth = %d), BusNode %d", nodename, offset, depth, busNode);
         status = CreatePdoAndInsert(Device, Context, nodename, offset, depth, busNode);
         if (!NT_SUCCESS(status)) {
             TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! CreatePdoAndInsert failed on node %d with %!STATUS!", offset, status);
@@ -165,7 +168,7 @@ CreatePdoAndInsert(
     }
 
     // Build a device ID on the fly
-    status = RtlUnicodeStringPrintf(&deviceId, L"DT_NODE_%d", Offset);
+    status = RtlUnicodeStringPrintf(&deviceId, L"OFDT\\DT_NODE_%d", Offset);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
         goto cleanup;
@@ -178,12 +181,14 @@ CreatePdoAndInsert(
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
         goto cleanup;
     }
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, DT Compat Name %s %Z, Unicode Compat Name %wZ", Offset, compatProperty->data, &dtCompatibleNameAnsi, &dtCompatibleNameUnicode);
     for (auto i = 0; i < dtCompatibleNameUnicode.Length; i++) {
-        if (dtCompatibleNameUnicode.Buffer[i] == L',' || dtCompatibleNameUnicode.Buffer[i] == L'-') {
+        if (dtCompatibleNameUnicode.Buffer[i] == L',' || dtCompatibleNameUnicode.Buffer[i] == L'-' || dtCompatibleNameUnicode.Buffer[i] == L'.') {
             dtCompatibleNameUnicode.Buffer[i] = L'_';
         }
     }
-    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%s", dtCompatibleNameUnicode);
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, DT Compat Name %s %Z, Unicode Compat Name %wZ", Offset, compatProperty->data, &dtCompatibleNameAnsi, &dtCompatibleNameUnicode);
+    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &dtCompatibleNameUnicode);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
         goto cleanup;
@@ -198,18 +203,21 @@ CreatePdoAndInsert(
     // XXX: Should this be changed?
     WdfDeviceInitSetDeviceType(pDeviceInit, FILE_DEVICE_BUS_EXTENDER);
 
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Device ID %wZ", Offset, &deviceId);
     status = WdfPdoInitAssignDeviceID(pDeviceInit, &deviceId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignDeviceID with %!STATUS!", status);
         goto cleanup;
     }
 
-    status = WdfPdoInitAddHardwareID(pDeviceInit, &deviceId);
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Hardware ID %wZ", Offset, &hardwareId);
+    status = WdfPdoInitAddHardwareID(pDeviceInit, &hardwareId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddHardwareID with %!STATUS!", status);
         goto cleanup;
     }
 
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Compat ID %wZ", Offset, IsBusNode ? &busNodeCompatId : &devNodeCompatId);
     status = WdfPdoInitAddCompatibleID(pDeviceInit, IsBusNode ? &busNodeCompatId : &devNodeCompatId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddCompatibleID with %!STATUS!", status);
@@ -222,6 +230,7 @@ CreatePdoAndInsert(
         goto cleanup;
     }
 
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Instance ID %wZ", Offset, &buffer);
     status = WdfPdoInitAssignInstanceID(pDeviceInit, &buffer);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignInstanceID with %!STATUS!", status);
@@ -234,7 +243,8 @@ CreatePdoAndInsert(
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
         goto cleanup;
     }
-
+    
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Description %wZ", Offset, &buffer);
     status = WdfPdoInitAddDeviceText(pDeviceInit, &buffer, &deviceLocation, 0x409);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddDeviceText with %!STATUS!", status);
