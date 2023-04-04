@@ -50,6 +50,13 @@ int main(int argc, char* argv[])
         if (prop != NULL && prop->len > 0) {
             printf("has compatible property: %s", prop->data);
         }
+
+        int tmpOffset = 0, tmpDepth = 0;
+        tmpOffset = fdt_next_node(dtbBuffer, nodeoffset, &tmpDepth);
+        if (tmpOffset >= 0) tmpDepth = fdt_node_depth(dtbBuffer, tmpOffset);
+        bool busNode = (tmpOffset >= 0 && tmpDepth > depth) ? true : false;
+        if (busNode) printf(" is bus node");
+
         printf("\n");
 
 #if 0

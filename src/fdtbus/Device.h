@@ -26,6 +26,18 @@ typedef struct _PDO_DEVICE_CONTEXT
     int CurrentOffset;
 } PDO_DEVICE_CONTEXT, *PPDO_DEVICE_CONTEXT;
 
+typedef struct _DT_BUS_INTERFACE_STANDARD {
+    INTERFACE InterfaceHeader;
+
+    VOID* pDeviceTreeBlob;
+    size_t DeviceTreeBlobSize;
+    int CurrentDepth;
+    int CurrentOffset;
+
+    // Retain a copy of the node, in case it has functional uses
+    UNICODE_STRING DeviceTreeNodeCompatibleName;
+} DT_BUS_INTERFACE_STANDARD, *PDT_BUS_INTERFACE_STANDARD;
+
 //
 // This macro will generate an inline function called DeviceGetContext
 // which will be used to get a pointer to the device context memory
@@ -56,6 +68,13 @@ CreatePdoAndInsert(
     _In_ int Offset,
     _In_ int Depth,
     _In_ BOOLEAN IsBusNode
+);
+
+NTSTATUS
+CreateAccessNodeForChildBus(
+    _In_ WDFDEVICE Device,
+    _In_ PFDO_DEVICE_CONTEXT Context,
+    _In_ PDT_BUS_INTERFACE_STANDARD pInterface
 );
 
 #define DT_BUSENUM_DEVICENODE_COMPATIBLE_IDS L"DEVICETREE\\DeviceNode"

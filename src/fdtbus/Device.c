@@ -16,13 +16,14 @@
 NTSTATUS
 DeviceTreeBusCreateDevice(
     _Inout_ PWDFDEVICE_INIT DeviceInit
-    )
+)
 {
     WDF_OBJECT_ATTRIBUTES attributes;
     PFDO_DEVICE_CONTEXT deviceContext;
     WDFDEVICE device;
     NTSTATUS status;
     PNP_BUS_INFORMATION busInfo;
+    DT_BUS_INTERFACE_STANDARD Interface;
     int err = 0;
 
     PAGED_CODE();
@@ -35,11 +36,40 @@ DeviceTreeBusCreateDevice(
 
     deviceContext = FdoGetContext(device);
 
+    // Try to probe the device interface of parent device, and retrieve depth and offset information back
+    status = WdfFdoQueryForInterface(
+        device,
+        &GUID_INTERNAL_INTERFACE_QUERY_DT,
+        (PINTERFACE)&Interface,
+        sizeof(Interface),
+        1,
+        NULL
+    );
+
     // Initialize the context.
-    deviceContext->CurrentDepth = 0;
-    deviceContext->pDeviceTreeBlob = (VOID*) g_testDeviceTree;
-    deviceContext->DeviceTreeBlobSize = sizeof(g_testDeviceTree);
-    deviceContext->CurrentOffset = 0;
+    if (NT_SUCCESS(status)) {
+        if (sizeof(g_testDeviceTree) != Interface.DeviceTreeBlobSize)
+        {
+            TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! Child device has a mismatched DT");
+            status = STATUS_BAD_DATA;
+            return status;
+        }
+
+        deviceContext->CurrentDepth = Interface.CurrentDepth;
+        deviceContext->CurrentOffset = Interface.CurrentOffset;
+        deviceContext->pDeviceTreeBlob = (VOID*)g_testDeviceTree;
+        deviceContext->DeviceTreeBlobSize = sizeof(g_testDeviceTree);
+
+        TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! WdfFdoQueryForInterface succeeded, this is a child device node. Depth %d, Offset %d", Interface.CurrentDepth, Interface.CurrentOffset);
+    }
+    else {
+        TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! WdfFdoQueryForInterface failed, this is a root device node");
+        deviceContext->CurrentDepth = 0;
+        deviceContext->pDeviceTreeBlob = (VOID*)g_testDeviceTree;
+        deviceContext->DeviceTreeBlobSize = sizeof(g_testDeviceTree);
+        deviceContext->CurrentOffset = 0;
+        status = STATUS_SUCCESS;
+    }
 
     // Make sure the device tree has sanity.
     err = fdt_check_header(deviceContext->pDeviceTreeBlob);
@@ -79,6 +109,12 @@ DeviceTreeBusCreateDevice(
 
     // Perform static enumeration of bus device
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Start to enumearte devices");
+    if (deviceContext->CurrentDepth > 0)
+    {
+        status = CreateAccessNodeForChildBus(device, deviceContext, &Interface);
+        if (!NT_SUCCESS(status)) return status;
+    }
+
     status = EnumerateDevices(device, deviceContext);
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Finished enumerating devices");
 
@@ -101,13 +137,28 @@ EnumerateDevices(
     while (offset >= 0 && depth >= 0) {
         int tmpOffset = 0, tmpDepth = 0;
         BOOLEAN busNode = FALSE;
-        if (depth == 0 || depth > Context->CurrentDepth + 1) {
+        // For depth = 0 (Root node), automatically advance to the next node if this device is root node, otherwise
+        // bail out
+        if (Context->CurrentDepth == 0 && depth == 0) {
+            goto next_node;
+        }
+        else if (Context->CurrentDepth != 0 && depth == 0) {
+            break;
+        }
+        // For depth > 0 (child node), enumerate anything with current depth + 1, run until see node of current depth
+        if (Context->CurrentDepth != 0 && depth <= Context->CurrentDepth) {
+            break;
+        }
+        // Guardrail: only enumerate one level device
+        if (depth > Context->CurrentDepth + 1)
+        {
             goto next_node;
         }
 
         // Check if this is a end device node, or it's a extended bus node
         tmpOffset = fdt_next_node(Context->pDeviceTreeBlob, offset, &tmpDepth);
-        busNode = tmpOffset >= 0 && tmpDepth > depth;
+        if (tmpOffset >= 0) tmpDepth = fdt_node_depth(Context->pDeviceTreeBlob, tmpOffset);
+        busNode = (tmpOffset >= 0 && tmpDepth > depth) ? TRUE : FALSE;
 
         // Read name property and enumerate the device
         const char* nodename = fdt_get_name(Context->pDeviceTreeBlob, offset, NULL);
@@ -132,6 +183,141 @@ EnumerateDevices(
 }
 
 NTSTATUS
+CreateAccessNodeForChildBus(
+    _In_ WDFDEVICE Device,
+    _In_ PFDO_DEVICE_CONTEXT Context,
+    _In_ PDT_BUS_INTERFACE_STANDARD pInterface
+)
+{
+    NTSTATUS                    status = STATUS_SUCCESS;
+    PWDFDEVICE_INIT             pDeviceInit = NULL;
+    WDFDEVICE                   hChild = NULL;
+    WDF_OBJECT_ATTRIBUTES       pdoAttributes;
+    WDF_DEVICE_PNP_CAPABILITIES pnpCaps;
+    WDF_DEVICE_POWER_CAPABILITIES powerCaps;
+
+    ANSI_STRING nodeNameAnsi;
+    DECLARE_CONST_UNICODE_STRING(devNodeCompatId, DT_BUSENUM_DEVICENODE_COMPATIBLE_IDS);
+    DECLARE_CONST_UNICODE_STRING(deviceLocation, DT_BUSENUM_LOCATION_ID);
+    DECLARE_UNICODE_STRING_SIZE(buffer, MAX_ID_LEN);
+    DECLARE_UNICODE_STRING_SIZE(deviceId, 255);
+    DECLARE_UNICODE_STRING_SIZE(hardwareId, 255);
+
+    // Build a device ID on the fly
+    status = RtlUnicodeStringPrintf(&deviceId, L"OFDT\\DT_NODE_%d_Access", pInterface->CurrentOffset);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    // Post process dtCompatibleName and generate hardware ID
+    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &pInterface->DeviceTreeNodeCompatibleName);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    pDeviceInit = WdfPdoInitAllocate(Device);
+    if (pDeviceInit == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto cleanup;
+    }
+
+    // XXX: Should this be changed?
+    WdfDeviceInitSetDeviceType(pDeviceInit, FILE_DEVICE_BUS_EXTENDER);
+
+    status = WdfPdoInitAssignDeviceID(pDeviceInit, &deviceId);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignDeviceID with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    status = WdfPdoInitAddHardwareID(pDeviceInit, &hardwareId);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddHardwareID with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    status = WdfPdoInitAddCompatibleID(pDeviceInit, &devNodeCompatId);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddCompatibleID with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    status = RtlUnicodeStringPrintf(&buffer, L"%02d", pInterface->CurrentOffset + 1);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    status = WdfPdoInitAssignInstanceID(pDeviceInit, &buffer);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignInstanceID with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    const char* nodename = fdt_get_name(Context->pDeviceTreeBlob, pInterface->CurrentOffset, NULL);
+    RtlInitAnsiString(&nodeNameAnsi, nodename);
+    status = RtlAnsiStringToUnicodeString(&buffer, &nodeNameAnsi, FALSE);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    status = WdfPdoInitAddDeviceText(pDeviceInit, &buffer, &deviceLocation, 0x409);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddDeviceText with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    WdfPdoInitSetDefaultLocale(pDeviceInit, 0x409);
+    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&pdoAttributes, PDO_DEVICE_CONTEXT);
+    status = WdfDeviceCreate(&pDeviceInit, &pdoAttributes, &hChild);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfDeviceCreate with %!STATUS!", status);
+        goto cleanup;
+    }
+
+    PPDO_DEVICE_CONTEXT pdoData = PdoGetContext(hChild);
+    pdoData->CurrentDepth = pInterface->CurrentDepth;
+    pdoData->CurrentOffset = pInterface->CurrentOffset;
+    pdoData->DeviceTreeBlobSize = Context->DeviceTreeBlobSize;
+    pdoData->pDeviceTreeBlob = Context->pDeviceTreeBlob;
+
+    // Platform device, can't be removed
+    WDF_DEVICE_PNP_CAPABILITIES_INIT(&pnpCaps);
+    pnpCaps.Removable = WdfFalse;
+    pnpCaps.EjectSupported = WdfFalse;
+    pnpCaps.SurpriseRemovalOK = WdfFalse;
+    pnpCaps.Address = pInterface->CurrentOffset + 1;
+    pnpCaps.UINumber = pInterface->CurrentOffset + 1;
+    WdfDeviceSetPnpCapabilities(hChild, &pnpCaps);
+
+    WDF_DEVICE_POWER_CAPABILITIES_INIT(&powerCaps);
+    powerCaps.DeviceD1 = WdfTrue;
+    powerCaps.WakeFromD1 = WdfTrue;
+    powerCaps.DeviceWake = PowerDeviceD1;
+    powerCaps.DeviceState[PowerSystemWorking] = PowerDeviceD0;
+    powerCaps.DeviceState[PowerSystemSleeping1] = PowerDeviceD1;
+    powerCaps.DeviceState[PowerSystemSleeping2] = PowerDeviceD3;
+    powerCaps.DeviceState[PowerSystemSleeping3] = PowerDeviceD3;
+    powerCaps.DeviceState[PowerSystemHibernate] = PowerDeviceD3;
+    powerCaps.DeviceState[PowerSystemShutdown] = PowerDeviceD3;
+    WdfDeviceSetPowerCapabilities(hChild, &powerCaps);
+
+    status = WdfFdoAddStaticChild(Device, hChild);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfFdoAddStaticChild with %!STATUS!", status);
+        goto cleanup;
+    }
+
+cleanup:
+    if (pDeviceInit != NULL) WdfDeviceInitFree(pDeviceInit);
+    if (hChild) WdfObjectDelete(hChild);
+    return status;
+}
+
+NTSTATUS
 CreatePdoAndInsert(
     _In_ WDFDEVICE Device,
     _In_ PFDO_DEVICE_CONTEXT Context,
@@ -147,7 +333,7 @@ CreatePdoAndInsert(
     WDF_OBJECT_ATTRIBUTES       pdoAttributes;
     WDF_DEVICE_PNP_CAPABILITIES pnpCaps;
     WDF_DEVICE_POWER_CAPABILITIES powerCaps;
-    
+
     ANSI_STRING nodeNameAnsi;
     ANSI_STRING dtCompatibleNameAnsi;
     UNICODE_STRING dtCompatibleNameUnicode;
@@ -157,6 +343,9 @@ CreatePdoAndInsert(
     DECLARE_UNICODE_STRING_SIZE(buffer, MAX_ID_LEN);
     DECLARE_UNICODE_STRING_SIZE(deviceId, 255);
     DECLARE_UNICODE_STRING_SIZE(hardwareId, 255);
+
+    DT_BUS_INTERFACE_STANDARD BusInterface;
+    WDF_QUERY_INTERFACE_CONFIG qiConfig;
 
     PAGED_CODE();
 
@@ -181,13 +370,11 @@ CreatePdoAndInsert(
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
         goto cleanup;
     }
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, DT Compat Name %s %Z, Unicode Compat Name %wZ", Offset, compatProperty->data, &dtCompatibleNameAnsi, &dtCompatibleNameUnicode);
     for (auto i = 0; i < dtCompatibleNameUnicode.Length; i++) {
         if (dtCompatibleNameUnicode.Buffer[i] == L',' || dtCompatibleNameUnicode.Buffer[i] == L'-' || dtCompatibleNameUnicode.Buffer[i] == L'.') {
             dtCompatibleNameUnicode.Buffer[i] = L'_';
         }
     }
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, DT Compat Name %s %Z, Unicode Compat Name %wZ", Offset, compatProperty->data, &dtCompatibleNameAnsi, &dtCompatibleNameUnicode);
     status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &dtCompatibleNameUnicode);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
@@ -203,21 +390,18 @@ CreatePdoAndInsert(
     // XXX: Should this be changed?
     WdfDeviceInitSetDeviceType(pDeviceInit, FILE_DEVICE_BUS_EXTENDER);
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Device ID %wZ", Offset, &deviceId);
     status = WdfPdoInitAssignDeviceID(pDeviceInit, &deviceId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignDeviceID with %!STATUS!", status);
         goto cleanup;
     }
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Hardware ID %wZ", Offset, &hardwareId);
-    status = WdfPdoInitAddHardwareID(pDeviceInit, &hardwareId);
+    status = WdfPdoInitAddHardwareID(pDeviceInit, IsBusNode ? &deviceId : &hardwareId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddHardwareID with %!STATUS!", status);
         goto cleanup;
     }
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Compat ID %wZ", Offset, IsBusNode ? &busNodeCompatId : &devNodeCompatId);
     status = WdfPdoInitAddCompatibleID(pDeviceInit, IsBusNode ? &busNodeCompatId : &devNodeCompatId);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddCompatibleID with %!STATUS!", status);
@@ -230,7 +414,6 @@ CreatePdoAndInsert(
         goto cleanup;
     }
 
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Instance ID %wZ", Offset, &buffer);
     status = WdfPdoInitAssignInstanceID(pDeviceInit, &buffer);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAssignInstanceID with %!STATUS!", status);
@@ -243,8 +426,7 @@ CreatePdoAndInsert(
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
         goto cleanup;
     }
-    
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "%!FUNC! Offset = %d, Description %wZ", Offset, &buffer);
+
     status = WdfPdoInitAddDeviceText(pDeviceInit, &buffer, &deviceLocation, 0x409);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfPdoInitAddDeviceText with %!STATUS!", status);
@@ -286,8 +468,32 @@ CreatePdoAndInsert(
     powerCaps.DeviceState[PowerSystemShutdown] = PowerDeviceD3;
     WdfDeviceSetPowerCapabilities(hChild, &powerCaps);
 
-    // No interface added - let child device to decide on its own
+    // Add an interface for child device use
+    if (IsBusNode) {
+        RtlZeroMemory(&BusInterface, sizeof(BusInterface));
+        BusInterface.InterfaceHeader.Size = sizeof(BusInterface);
+        BusInterface.InterfaceHeader.Version = 1;
+        BusInterface.InterfaceHeader.Context = (PVOID)hChild;
+        BusInterface.InterfaceHeader.InterfaceReference = WdfDeviceInterfaceReferenceNoOp;
+        BusInterface.InterfaceHeader.InterfaceDereference = WdfDeviceInterfaceDereferenceNoOp;
+        BusInterface.CurrentDepth = Depth;
+        BusInterface.CurrentOffset = Offset;
+        BusInterface.DeviceTreeBlobSize = Context->DeviceTreeBlobSize;
+        BusInterface.pDeviceTreeBlob = Context->pDeviceTreeBlob;
+        RtlCopyUnicodeString(&BusInterface.DeviceTreeNodeCompatibleName, &dtCompatibleNameUnicode);
 
+        WDF_QUERY_INTERFACE_CONFIG_INIT(&qiConfig,
+            (PINTERFACE)&BusInterface,
+            &GUID_INTERNAL_INTERFACE_QUERY_DT,
+            NULL);
+
+        status = WdfDeviceAddQueryInterface(hChild, &qiConfig);
+        if (!NT_SUCCESS(status)) {
+            TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfDeviceAddQueryInterface with %!STATUS!", status);
+            goto cleanup;
+        }
+    }
+    
     status = WdfFdoAddStaticChild(Device, hChild);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! WdfFdoAddStaticChild with %!STATUS!", status);

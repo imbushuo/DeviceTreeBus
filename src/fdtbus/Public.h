@@ -1,20 +1,3 @@
-/*++
-
-Module Name:
-
-    public.h
-
-Abstract:
-
-    This module contains the common declarations shared by driver
-    and user applications.
-
-Environment:
-
-    user and kernel
-
---*/
-
 //
 // Define an Interface Guid so that apps can find the device and talk to it.
 //
@@ -22,3 +5,7 @@ Environment:
 DEFINE_GUID (GUID_DEVINTERFACE_DeviceTreeBus,
     0xa7f0bca4,0xe8ba,0x4aa9,0x85,0xb5,0x15,0x75,0x07,0xcf,0x41,0xad);
 // {a7f0bca4-e8ba-4aa9-85b5-157507cf41ad}
+
+DEFINE_GUID(GUID_INTERNAL_INTERFACE_QUERY_DT,
+    0x6a7b374a, 0x4794, 0x4999, 0x88, 0xa9, 0x75, 0x54, 0xc9, 0x6e, 0x28, 0xa3);
+// {6A7B374A-4794-4999-88A9-7554C96E28A3}

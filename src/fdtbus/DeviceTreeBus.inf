@@ -31,6 +31,7 @@ WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with
 
 [Standard.NT$ARCH$]
 %DeviceTreeBus.DeviceDesc%=DeviceTreeBus_Device, Root\DeviceTreeBus
+%DeviceTreeDeviceNodeBus.DeviceDesc%=DeviceTreeBus_Device, DEVICETREE\BusNode
 
 [DeviceTreeBus_Device.NT]
 CopyFiles=Drivers_Dir
@@ -74,4 +75,5 @@ SPSVCINST_ASSOCSERVICE= 0x00000002
 ManufacturerName="Random"
 DiskName = "DeviceTreeBus Installation Disk"
 DeviceTreeBus.DeviceDesc = "Flattened Device Tree Root Bus Module"
+DeviceTreeDeviceNodeBus.DeviceDesc = "Device Node"
 DeviceTreeBus.SVCDESC = "FDT Device Tree Bus Service"
