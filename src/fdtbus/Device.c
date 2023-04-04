@@ -1,6 +1,6 @@
 #include "driver.h"
 #include "device.tmh"
-#include "include/TestDeviceTree.h"
+#include "include/TestDeviceTreeApple.h"
 
 #define NTSTRSAFE_LIB
 #include <ntstrsafe.h>

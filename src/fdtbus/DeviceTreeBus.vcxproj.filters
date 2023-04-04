@@ -39,7 +39,10 @@
     <ClInclude Include="Trace.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="include\TestDeviceTree.h">
+    <ClInclude Include="include\TestDeviceTreeQC.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\TestDeviceTreeApple.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
