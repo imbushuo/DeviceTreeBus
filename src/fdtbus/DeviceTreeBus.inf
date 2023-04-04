@@ -30,7 +30,7 @@ WdfCoInstaller$KMDFCOINSTALLERVERSION$.dll=1 ; make sure the number matches with
 %ManufacturerName%=Standard,NT$ARCH$
 
 [Standard.NT$ARCH$]
-%DeviceTreeBus.DeviceDesc%=DeviceTreeBus_Device, Root\DeviceTreeBus ; TODO: edit hw-id
+%DeviceTreeBus.DeviceDesc%=DeviceTreeBus_Device, Root\DeviceTreeBus
 
 [DeviceTreeBus_Device.NT]
 CopyFiles=Drivers_Dir
@@ -71,7 +71,7 @@ KmdfLibraryVersion = $KMDFVERSION$
 
 [Strings]
 SPSVCINST_ASSOCSERVICE= 0x00000002
-ManufacturerName="<Your manufacturer name>" ;TODO: Replace with your manufacturer name
+ManufacturerName="Random"
 DiskName = "DeviceTreeBus Installation Disk"
-DeviceTreeBus.DeviceDesc = "DeviceTreeBus Device"
-DeviceTreeBus.SVCDESC = "DeviceTreeBus Service"
+DeviceTreeBus.DeviceDesc = "Flattened Device Tree Root Bus Module"
+DeviceTreeBus.SVCDESC = "FDT Device Tree Bus Service"

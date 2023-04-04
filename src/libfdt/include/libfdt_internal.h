@@ -7,6 +7,7 @@
  */
 #include <fdt.h>
 
+#pragma warning(disable : 4146)
 #pragma warning(disable : 4242)
 #pragma warning(disable : 4244)
 #pragma warning(disable : 4267)

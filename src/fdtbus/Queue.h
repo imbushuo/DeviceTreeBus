@@ -37,6 +37,5 @@ DeviceTreeBusQueueInitialize(
 // Events from the IoQueue object
 //
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL DeviceTreeBusEvtIoDeviceControl;
-EVT_WDF_IO_QUEUE_IO_STOP DeviceTreeBusEvtIoStop;
 
 EXTERN_C_END
