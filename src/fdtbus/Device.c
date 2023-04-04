@@ -127,7 +127,7 @@ EnumerateDevices(
     _In_ PFDO_DEVICE_CONTEXT Context
 )
 {
-    int offset = 0, depth = 0;
+    int offset = Context->CurrentOffset, depth = Context->CurrentDepth;
     NTSTATUS status;
 
     PAGED_CODE();
@@ -137,6 +137,7 @@ EnumerateDevices(
     while (offset >= 0 && depth >= 0) {
         int tmpOffset = 0, tmpDepth = 0;
         BOOLEAN busNode = FALSE;
+
         // For depth = 0 (Root node), automatically advance to the next node if this device is root node, otherwise
         // bail out
         if (Context->CurrentDepth == 0 && depth == 0) {
@@ -197,11 +198,38 @@ CreateAccessNodeForChildBus(
     WDF_DEVICE_POWER_CAPABILITIES powerCaps;
 
     ANSI_STRING nodeNameAnsi;
+    ANSI_STRING dtCompatibleNameAnsi;
+    UNICODE_STRING dtCompatibleNameUnicode;
     DECLARE_CONST_UNICODE_STRING(devNodeCompatId, DT_BUSENUM_DEVICENODE_COMPATIBLE_IDS);
     DECLARE_CONST_UNICODE_STRING(deviceLocation, DT_BUSENUM_LOCATION_ID);
     DECLARE_UNICODE_STRING_SIZE(buffer, MAX_ID_LEN);
     DECLARE_UNICODE_STRING_SIZE(deviceId, 255);
     DECLARE_UNICODE_STRING_SIZE(hardwareId, 255);
+
+    // Requires compatible property to successfully enumerate (for hardware ID), otherwise silently drop it
+    const struct fdt_property* compatProperty = fdt_get_property(Context->pDeviceTreeBlob, pInterface->CurrentOffset, DT_COMPATIBLE_PROP, NULL);
+    if (compatProperty == NULL || compatProperty->len < 1) {
+        status = STATUS_SUCCESS;
+        goto cleanup;
+    }
+
+    // Post process dtCompatibleName and generate hardware ID
+    RtlInitAnsiString(&dtCompatibleNameAnsi, compatProperty->data);
+    status = RtlAnsiStringToUnicodeString(&dtCompatibleNameUnicode, &dtCompatibleNameAnsi, TRUE);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlAnsiStringToUnicodeString with %!STATUS!", status);
+        goto cleanup;
+    }
+    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &dtCompatibleNameUnicode);
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
+        goto cleanup;
+    }
+    for (auto i = 0; i < dtCompatibleNameUnicode.Length; i++) {
+        if (dtCompatibleNameUnicode.Buffer[i] == L',' || dtCompatibleNameUnicode.Buffer[i] == L'-' || dtCompatibleNameUnicode.Buffer[i] == L'.') {
+            dtCompatibleNameUnicode.Buffer[i] = L'_';
+        }
+    }
 
     // Build a device ID on the fly
     status = RtlUnicodeStringPrintf(&deviceId, L"OFDT\\DT_NODE_%d_Access", pInterface->CurrentOffset);
@@ -211,7 +239,7 @@ CreateAccessNodeForChildBus(
     }
 
     // Post process dtCompatibleName and generate hardware ID
-    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &pInterface->DeviceTreeNodeCompatibleName);
+    status = RtlUnicodeStringPrintf(&hardwareId, L"OFDT\\%wZ", &dtCompatibleNameUnicode);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "%!FUNC! RtlUnicodeStringPrintf with %!STATUS!", status);
         goto cleanup;
@@ -480,7 +508,6 @@ CreatePdoAndInsert(
         BusInterface.CurrentOffset = Offset;
         BusInterface.DeviceTreeBlobSize = Context->DeviceTreeBlobSize;
         BusInterface.pDeviceTreeBlob = Context->pDeviceTreeBlob;
-        RtlCopyUnicodeString(&BusInterface.DeviceTreeNodeCompatibleName, &dtCompatibleNameUnicode);
 
         WDF_QUERY_INTERFACE_CONFIG_INIT(&qiConfig,
             (PINTERFACE)&BusInterface,

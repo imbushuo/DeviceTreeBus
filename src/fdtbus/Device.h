@@ -33,9 +33,6 @@ typedef struct _DT_BUS_INTERFACE_STANDARD {
     size_t DeviceTreeBlobSize;
     int CurrentDepth;
     int CurrentOffset;
-
-    // Retain a copy of the node, in case it has functional uses
-    UNICODE_STRING DeviceTreeNodeCompatibleName;
 } DT_BUS_INTERFACE_STANDARD, *PDT_BUS_INTERFACE_STANDARD;
 
 //
